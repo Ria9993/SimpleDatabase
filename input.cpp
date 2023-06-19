@@ -8,7 +8,8 @@ void read_input(InputBuffer& input_buffer)
     const int bytes_read =
         _get_line(stdin, input_buffer.buffer, input_buffer.buffer_length);
 
-    if (bytes_read <= 0) {
+    if (bytes_read <= 0) 
+    {
         printf("Error reading input\n");
         exit(EXIT_FAILURE);
     }
