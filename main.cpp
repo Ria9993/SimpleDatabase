@@ -88,7 +88,7 @@ int main(void)
         }
 
         Statement statement;
-        switch (prepare_statement)
+        switch (prepare_statement(input_buffer, statement))
         {
             case PREPARE_SUCCESS:
                 break;
