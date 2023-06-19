@@ -1,2 +1,2 @@
 # SimpleDatabase
-Based off SQLite
+Modeled off SQLite
