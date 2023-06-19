@@ -22,7 +22,7 @@ int _get_line(FILE* stream, char* buf, int buf_max)
     int i = 0;
     for (; i < buf_max; i++)
     {
-        buf[i] = getc(steram);
+        buf[i] = getc(stream);
         if (buf[i] == EOF || buf[i] == '\n')
         {
             buf[i] = '\0';

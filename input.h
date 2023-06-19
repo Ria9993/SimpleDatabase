@@ -3,8 +3,8 @@
 #include <cstdio>
 
 enum {
-    _GET_LINE_MAX = 256;
-}
+    _GET_LINE_MAX = 256
+};
 
 typedef struct _InputBuffer {
     char        buffer[_GET_LINE_MAX];
