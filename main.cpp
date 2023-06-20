@@ -7,6 +7,9 @@
 
 #ifdef _WIN32
 #elif __linux__
+#elif __APPLE__
+#else
+    #error "Unknown Platform"
 #endif
 
 typedef enum {
