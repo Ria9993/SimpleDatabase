@@ -40,25 +40,29 @@ enum {
 };
 
 typedef struct {
-    unit32_t    id;
+    uint32_t    id;
     char        username[COLUMN_USERNAME_SIZE];
     char        email[COLUMN_EMAIL_SIZE];
 } Row;
 
+void print_row(Row& row)
+{
+    printf("(%d, %s, %s)\n", row.id, row.username, row.email);
+}
+
 #include <cstddef>
 #define attribute_sizeof(Struct, Attribute) sizeof(((Struct*)0)->Attribute)
 
-enum Row_layout {
-    ID_SIZE         = attribute_sizeof(Row, id),
-    USERNAME_SIZE   = attribute_sizeof(Row, username),
-    EMAIL_SIZE      = attribute_sizeof(Row, email),
+/* Row layout */
+#define ID_SIZE         attribute_sizeof(Row, id)
+#define USERNAME_SIZE   attribute_sizeof(Row, username)
+#define EMAIL_SIZE      attribute_sizeof(Row, email)
     
-    ID_OFFSET       = offsetof(Row, id),
-    USERNAME_OFFSET = offsetof(Row, username),
-    EMAIL_OFFSET    = offsetof(Row, email),
+#define ID_OFFSET       offsetof(Row, id)
+#define USERNAME_OFFSET offsetof(Row, username)
+#define EMAIL_OFFSET    offsetof(Row, email)
 
-    ROW_SIZE        = sizeof(Row)
-};
+#define ROW_SIZE        sizeof(Row)
 
 /* Table */
 
@@ -86,19 +90,19 @@ typedef struct _Table {
     }
 } Table;
 
-void* row_slot(Table* table, uint32_t row_num)
+void* row_slot(Table& table, uint32_t row_num)
 {
     const uint32_t page_num = row_num / ROWS_PER_PAGE;
-    void* page = table->pages[page_num];
+    void* page = table.pages[page_num];
     if (page == NULL)
     {
-        table->pages[page_num] = malloc(PAGE_SIZE);
-        page = table->pages[page_num];
+        table.pages[page_num] = malloc(PAGE_SIZE);
+        page = table.pages[page_num];
     }
     
     const uint32_t row_offset = row_num % ROWS_PER_PAGE;
     const uint32_t byte_offset = row_offset * ROW_SIZE;
-    return page + byte_offset;
+    return (char*)page + byte_offset;
 }
 
 /* Statement */
@@ -131,7 +135,7 @@ PrepareResult prepare_statement(InputBuffer& input_buffer, Statement& statement)
     return PREPARE_UNRECOGNIZED_STATEMENT;
 }
 
-void serialize_row(Raw* source, void* dest)
+void serialize_row(Row* source, void* dest)
 {
     memcpy(dest, source, ROW_SIZE);
 }
@@ -176,7 +180,7 @@ ExecuteResult execute_insert(Statement& statement, Table& table)
 ExecuteResult execute_select(Statement& statement, Table& table)
 {
     Row row;
-    for (uint32_t i = 0; i < table->num_rows; i++)
+    for (uint32_t i = 0; i < table.num_rows; i++)
     {
         deserialize_row(row_slot(table, i), &row);
         print_row(&row);
