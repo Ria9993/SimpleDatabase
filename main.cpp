@@ -117,7 +117,7 @@ typedef struct {
     Row             row_to_insert;
 } Statement;
 
-PrepareResult prepare_inseart(InputBuffer6 input_buffer, Statement& statement)
+PrepareResult prepare_inseart(InputBuffer input_buffer, Statement& statement)
 {
     statement.type = STATEMENT_INSERT;
 
@@ -126,7 +126,7 @@ PrepareResult prepare_inseart(InputBuffer6 input_buffer, Statement& statement)
     char* username  = strtok(NULL, " ");
     char* email     = strtok(NULL, " ");
     
-    if (id_string == NULL || username == NULL || email == NULL)
+    if (id_str == NULL || username == NULL || email == NULL)
         return PREPARE_SYNTAX_ERROR;
 
     int id = atoi(id_str);
