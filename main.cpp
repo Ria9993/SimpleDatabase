@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <cerrno>
 
 #include "input.h"
 
@@ -54,17 +55,30 @@ enum Table_layout {
 class Table;
 
 class Pager {
-    friend Table;
-private:
+    friend class Table;
+public:
     FILE*       fs;
     uint32_t    file_length;
-    char*       pages[TABLE_MAX_PAGES];
+    int8_t*     pages[TABLE_MAX_PAGES];
+private:
     Pager(const char* filename)
         : fs(NULL)
         , file_length(0)
     {
         fs = fopen(filename, "r+b");
-        if (fs == -1) {
+        if (fs == NULL && errno == ENOENT)
+        {
+            fs = fopen(filename, "w");
+            if (fs == NULL || fclose(fs) != 0)
+            {
+                printf("Error creating new file : %d\n", errno);
+                exit(EXIT_FAILURE);
+            }
+            printf("Create new DB file : '%s'.\n", filename);
+            fs = fopen(filename, "r+b");
+        }
+        if (fs == NULL) 
+        {
             printf("Unable to open file : %d\n", errno);
             exit(EXIT_FAILURE);
         }
@@ -90,13 +104,13 @@ void pager_flush(Pager& pager, uint32_t page_num, uint32_t bytes)
     if (pager.pages[page_num] == NULL)
     {
         printf("Tried to flush null page.\n");
-        eixt(EXIT_FAILURE);
+        exit(EXIT_FAILURE);
     }
 
     if (fseek(pager.fs, page_num * PAGE_SIZE, SEEK_SET) == -1)
     {
         printf("Error to fseek() : %d\n", errno);
-        eixt(EXIT_FAILURE);
+        exit(EXIT_FAILURE);
     }
 
     ssize_t bytes_written = fwrite(pager.pages[page_num], sizeof(int8_t), bytes, pager.fs);
@@ -118,7 +132,7 @@ public:
     }
     ~Table()
     {
-        const uint32_t num_full_pages = table.num_rows / ROWS_PER_PAGE;
+        const uint32_t num_full_pages = num_rows / ROWS_PER_PAGE;
 
         for (uint32_t i = 0; i < num_full_pages; i++)
         {
@@ -131,7 +145,7 @@ public:
 
         // There may be a partial page to write to the end of the file
         // This should not be needed after we switch to a B-tree.
-        uint32_t num_additional_rows = table.num_rows % ROWS_PER_PAGE;
+        uint32_t num_additional_rows = num_rows % ROWS_PER_PAGE;
         if (num_additional_rows > 0)
         {
             uint32_t page_num = num_full_pages;
@@ -173,7 +187,7 @@ void* get_page(Pager& pager, uint32_t page_num)
     {
         // Cache miss. Allocate memory and load from file
         void* page = new int8_t[PAGE_SIZE];
-        const uint32_t num_pages = pager.file_length / PAGE_SIZE;
+        uint32_t num_pages = pager.file_length / PAGE_SIZE;
 
         // We might save a partial page at the end of file
         if (pager.file_length % PAGE_SIZE != 0)
@@ -181,8 +195,8 @@ void* get_page(Pager& pager, uint32_t page_num)
         
         if (page_num < num_pages)
         {
-            fseek(page.fs, page_num * PAGE_SIZE, SEEK_SET);
-            ssize_t bytes_read = read(page.fs, page, PAGE_SIZE);
+            fseek(pager.fs, page_num * PAGE_SIZE, SEEK_SET);
+            ssize_t bytes_read = fread(page, sizeof(int8_t), PAGE_SIZE, pager.fs);
             if (bytes_read == -1)
             {
                 printf("Error reading file: %d\n", errno);
@@ -190,9 +204,9 @@ void* get_page(Pager& pager, uint32_t page_num)
             }
         }
 
-        page.pages[page_num] = page;
+        pager.pages[page_num] = (int8_t*)page;
     }
-    return page.pages[page_num];
+    return pager.pages[page_num];
 }
 
 void* row_slot(Table& table, uint32_t row_num)
