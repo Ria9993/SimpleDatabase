@@ -252,10 +252,10 @@ public:
     void* value()
     {
         const uint32_t page_num = row_num / ROWS_PER_PAGE;
-        void*   page = get_page(table->pager, page_num);
+        void* page = get_page(table->pager, page_num);
         const uint32_t row_offset = row_num % ROWS_PER_PAGE;
         const uint32_t byte_offset = row_offset * ROW_SIZE;
-        return page + byte_offset;
+        return (int8_t)page + byte_offset;
     }
     void advance()
     {
@@ -263,7 +263,7 @@ public:
         if (row_num >= table->num_rows)
             end_of_table = true;
     }
-}
+};
 
 /* Statement */
 
