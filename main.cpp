@@ -12,32 +12,7 @@
     #error "Unknown Platform"
 #endif
 
-typedef enum {
-    META_COMMAND_SUCCESS,
-    META_COMMAND_UNRECOGNIZED_COMMAND
-} MetaCommandResult;
-
-MetaCommandResult do_meta_command(InputBuffer& input_buffer)
-{
-    if (strcmp(input_buffer.buffer, ".exit") == 0)
-        exit(EXIT_SUCCESS);
-    else
-        return META_COMMAND_UNRECOGNIZED_COMMAND;
-}
-
-/* Statement */
-typedef enum {
-    PREPARE_SUCCESS,
-    PREPARE_UNRECOGNIZED_STATEMENT,
-    PREPARE_STRING_TOO_LONG,
-    PREPARE_NEGATIVE_ID,
-    PREPARE_SYNTAX_ERROR
-} PrepareResult;
-
-typedef enum {
-    STATEMENT_INSERT,
-    STATEMENT_SELECT
-} StatementType;
+/* Table */
 
 enum {
     COLUMN_USERNAME_SIZE = 32,
@@ -69,8 +44,6 @@ void print_row(Row& row)
 
 #define ROW_SIZE        sizeof(Row)
 
-/* Table */
-
 enum Table_layout {
     PAGE_SIZE       = 4096, //< Correspond OS page size
     TABLE_MAX_PAGES = 100,
@@ -78,39 +51,190 @@ enum Table_layout {
     TABLE_MAX_ROW   = ROWS_PER_PAGE * TABLE_MAX_PAGES
 };
 
-typedef struct _Table {
-    uint32_t    num_rows;
-    void*       pages[TABLE_MAX_PAGES];
-    _Table() :
-        num_rows(0)
+class Table;
+
+class Pager {
+    friend Table;
+private:
+    FILE*       fs;
+    uint32_t    file_length;
+    char*       pages[TABLE_MAX_PAGES];
+    Pager(const char* filename)
+        : fs(NULL)
+        , file_length(0)
     {
-        num_rows = 0;
+        fs = fopen(filename, "r+b");
+        if (fs == -1) {
+            printf("Unable to open file : %d\n", errno);
+            exit(EXIT_FAILURE);
+        }
+
+        if (fseek(fs, 0, SEEK_END) == -1)
+        {
+            printf("Error to fseek() : %d\n", errno);
+            exit(EXIT_FAILURE);
+        }
+        file_length = ftell(fs);
+
         for (int i = 0; i < TABLE_MAX_PAGES; i++)
             pages[i] = NULL;
     }
-    ~_Table()
+    ~Pager()
     {
-        for (int i = 0; pages[i] != NULL; i++)
-            free(pages[i]);
+        // Table class should be responsible for pages memory free.
     }
-} Table;
+};
+
+void pager_flush(Pager& pager, uint32_t page_num, uint32_t bytes)
+{
+    if (pager.pages[page_num] == NULL)
+    {
+        printf("Tried to flush null page.\n");
+        eixt(EXIT_FAILURE);
+    }
+
+    if (fseek(pager.fs, page_num * PAGE_SIZE, SEEK_SET) == -1)
+    {
+        printf("Error to fseek() : %d\n", errno);
+        eixt(EXIT_FAILURE);
+    }
+
+    ssize_t bytes_written = fwrite(pager.pages[page_num], sizeof(int8_t), bytes, pager.fs);
+    if (bytes_written != bytes)
+    {
+        printf("Error to fwrite() : %d\n", errno);
+        exit(EXIT_FAILURE);
+    }
+}
+
+class Table {
+public:
+    uint32_t    num_rows;
+    Pager       pager;
+    Table(const char* filename)
+        : pager(filename)
+    {
+        num_rows = pager.file_length / ROW_SIZE;
+    }
+    ~Table()
+    {
+        const uint32_t num_full_pages = table.num_rows / ROWS_PER_PAGE;
+
+        for (uint32_t i = 0; i < num_full_pages; i++)
+        {
+            if (pager.pages[i] == NULL)
+                continue;
+            pager_flush(pager, i, PAGE_SIZE);
+            delete pager.pages[i];
+            pager.pages[i] = NULL;
+        }
+
+        // There may be a partial page to write to the end of the file
+        // This should not be needed after we switch to a B-tree.
+        uint32_t num_additional_rows = table.num_rows % ROWS_PER_PAGE;
+        if (num_additional_rows > 0)
+        {
+            uint32_t page_num = num_full_pages;
+            if (pager.pages[page_num] != NULL)
+            {
+                pager_flush(pager, page_num, num_additional_rows * ROW_SIZE);
+                delete pager.pages[page_num];
+                pager.pages[page_num] = NULL;
+            }
+        }
+
+        int result = fclose(pager.fs);
+        if (result != 0)
+        {
+            printf("Error closing db file : %d\n", errno);
+            exit(EXIT_FAILURE);
+        }
+        for (uint32_t i = 0; i < TABLE_MAX_PAGES; i++)
+        {
+            if (pager.pages[i] != NULL)
+            {
+                delete pager.pages[i];
+                pager.pages[i] = NULL;
+            }
+        }
+    }
+};
+
+void* get_page(Pager& pager, uint32_t page_num)
+{
+    if (page_num >= TABLE_MAX_PAGES)
+    {
+        printf("Tried to fetch page number out of bounds. %d > %d\n"
+            , page_num, TABLE_MAX_PAGES);
+        exit(EXIT_FAILURE);
+    }
+    
+    if (pager.pages[page_num] == NULL)
+    {
+        // Cache miss. Allocate memory and load from file
+        void* page = new int8_t[PAGE_SIZE];
+        const uint32_t num_pages = pager.file_length / PAGE_SIZE;
+
+        // We might save a partial page at the end of file
+        if (pager.file_length % PAGE_SIZE != 0)
+            num_pages += 1;
+        
+        if (page_num < num_pages)
+        {
+            fseek(page.fs, page_num * PAGE_SIZE, SEEK_SET);
+            ssize_t bytes_read = read(page.fs, page, PAGE_SIZE);
+            if (bytes_read == -1)
+            {
+                printf("Error reading file: %d\n", errno);
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        page.pages[page_num] = page;
+    }
+    return page.pages[page_num];
+}
 
 void* row_slot(Table& table, uint32_t row_num)
 {
     const uint32_t page_num = row_num / ROWS_PER_PAGE;
-    void* page = table.pages[page_num];
-    if (page == NULL)
-    {
-        table.pages[page_num] = malloc(PAGE_SIZE);
-        page = table.pages[page_num];
-    }
+    void* const page = get_page(table.pager, page_num);
     
     const uint32_t row_offset = row_num % ROWS_PER_PAGE;
     const uint32_t byte_offset = row_offset * ROW_SIZE;
-    return (char*)page + byte_offset;
+    return (int8_t*)page + byte_offset;
 }
 
 /* Statement */
+
+typedef enum {
+    META_COMMAND_SUCCESS,
+    META_COMMAND_UNRECOGNIZED_COMMAND
+} MetaCommandResult;
+
+MetaCommandResult do_meta_command(InputBuffer& input_buffer, Table& table)
+{
+    if (strcmp(input_buffer.buffer, ".exit") == 0)
+    {
+        table.~Table();
+        exit(EXIT_SUCCESS);
+    }
+    else
+        return META_COMMAND_UNRECOGNIZED_COMMAND;
+}
+
+typedef enum {
+    PREPARE_SUCCESS,
+    PREPARE_UNRECOGNIZED_STATEMENT,
+    PREPARE_STRING_TOO_LONG,
+    PREPARE_NEGATIVE_ID,
+    PREPARE_SYNTAX_ERROR
+} PrepareResult;
+
+typedef enum {
+    STATEMENT_INSERT,
+    STATEMENT_SELECT
+} StatementType;
 
 typedef struct {
     StatementType   type;
@@ -214,9 +338,16 @@ ExecuteResult execute_select(Statement& statement, Table& table)
 
 void print_prompt() { printf("db > "); }
 
-int main(void)
+int main(int argc, char* argv[])
 {
-    Table table;
+    if (argc < 2)
+    {
+        printf("Must supply a database filename.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    const char* filename = argv[1];
+    Table table(filename);
     InputBuffer input_buffer;
     while (true)
     {
@@ -225,7 +356,7 @@ int main(void)
 
         if (input_buffer.buffer[0] == '.')
         {
-            switch (do_meta_command(input_buffer))
+            switch (do_meta_command(input_buffer, table))
             {
                 case META_COMMAND_SUCCESS:
                     continue;
