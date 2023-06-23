@@ -209,14 +209,60 @@ void* get_page(Pager& pager, uint32_t page_num)
     return pager.pages[page_num];
 }
 
-void* row_slot(Table& table, uint32_t row_num)
-{
-    const uint32_t page_num = row_num / ROWS_PER_PAGE;
-    void* const page = get_page(table.pager, page_num);
+// void* row_slot(Table& table, uint32_t row_num)
+// {
+//     const uint32_t page_num = row_num / ROWS_PER_PAGE;
+//     void* const page = get_page(table.pager, page_num);
     
-    const uint32_t row_offset = row_num % ROWS_PER_PAGE;
-    const uint32_t byte_offset = row_offset * ROW_SIZE;
-    return (int8_t*)page + byte_offset;
+//     const uint32_t row_offset = row_num % ROWS_PER_PAGE;
+//     const uint32_t byte_offset = row_offset * ROW_SIZE;
+//     return (int8_t*)page + byte_offset;
+// }
+
+/* cursor */
+
+class Cursor
+{
+public:
+    Table*      table;
+    uint32_t    row_num;
+    bool        end_of_table; // Indicates a position one past the last element
+
+    Cursor(Table* table0)
+        : table(table0)
+        , row_num(0)
+        , end_of_table(table0->num_rows == 0)
+    {
+    }
+
+    void set_table_start()
+    {
+        if (table == NULL)
+            return;
+        row_num = 0;
+        end_of_table = (table->num_rows == 0);
+    }
+    void set_table_end()
+    {
+        if (table == NULL)
+            return;
+        row_num = table->num_rows;
+        end_of_table = true;
+    }
+    void* value()
+    {
+        const uint32_t page_num = row_num / ROWS_PER_PAGE;
+        void*   page = get_page(table->pager, page_num);
+        const uint32_t row_offset = row_num % ROWS_PER_PAGE;
+        const uint32_t byte_offset = row_offset * ROW_SIZE;
+        return page + byte_offset;
+    }
+    void advance()
+    {
+        row_num += 1;
+        if (row_num >= table->num_rows)
+            end_of_table = true;
+    }
 }
 
 /* Statement */
@@ -332,8 +378,10 @@ ExecuteResult execute_insert(Statement& statement, Table& table)
         return EXECUTE_TABLE_FULL;
     
     Row* row_to_insert = &(statement.row_to_insert);
+    Cursor cursor(&table);
+    cursor.set_table_end();
 
-    serialize_row(row_to_insert, row_slot(table, table.num_rows));
+    serialize_row(row_to_insert, cursor.value());
     table.num_rows += 1;
     
     return EXECUTE_SUCCESS;
@@ -341,11 +389,13 @@ ExecuteResult execute_insert(Statement& statement, Table& table)
 
 ExecuteResult execute_select(Statement& statement, Table& table)
 {
+    Cursor cursor(&table);
     Row row;
-    for (uint32_t i = 0; i < table.num_rows; i++)
+    while (cursor.end_of_table != true)
     {
-        deserialize_row(row_slot(table, i), &row);
+        deserialize_row(cursor.value(), &row);
         print_row(row);
+        cursor.advance();
     }
     return EXECUTE_SUCCESS;
 }
