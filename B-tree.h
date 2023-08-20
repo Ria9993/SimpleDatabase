@@ -1,5 +1,10 @@
 #pragma once
 
+#include <cstdint>
+#include <cstdlib>
+#include "Table.h"
+#include "Cursor.h"
+
 /* Node header format */
 typedef enum { 
     NODE_INTERNAL,
@@ -35,31 +40,24 @@ const uint32_t LEAF_NODE_CELL_SIZE = LEAF_NODE_KEY_SIZE + LEAF_NODE_VALUE_SIZE;
 const uint32_t LEAF_NODE_SPACE_FOR_CELLS = PAGE_SIZE - LEAF_NODE_HEADER_SIZE;
 const uint32_t LEAF_NODE_MAX_CELLS = LEAF_NODE_SPACE_FOR_CELLS / LEAF_NODE_CELL_SIZE;
 
-uint32_t* get_leaf_node_num_cells(void* node) {
-	return (uint32_t*)((char*)node + LEAF_NODE_NUM_CELLS_OFFSET);
-}
+uint32_t* get_leaf_node_num_cells(void* node);
 
-void* get_leaf_node_cell(void* node, uint32_t cell_num) {
-	return (uint32_t*)((char*)node + LEAF_NODE_HEADER_SIZE + (cell_num * LEAF_NODE_CELL_SIZE)); 
-}
+void* get_leaf_node_cell(void* node, uint32_t cell_num);
 
-uint32_t* get_leaf_node_key(void* node, uint32_t cell_num) {
-	return (uint32_t*)get_leaf_node_cell(node, cell_num);
-}
+uint32_t* get_leaf_node_key(void* node, uint32_t cell_num);
 
-void* get_leaf_node_value(void* node, uint32_t cell_num) {
-  return (char*)get_leaf_node_cell(node, cell_num) + LEAF_NODE_KEY_SIZE;
-}
+void* get_leaf_node_value(void* node, uint32_t cell_num);
 
-NodeType get_node_type(void* node) {
-	uint8_t value = *((uint8_t*)node + NODE_TYPE_OFFSET);
-	return (NodeType)value;
-}
+NodeType get_node_type(void* node);
 
-void set_node_type(void* node, NodeType type) {
-	*((uint8_t*)node + NODE_TYPE_OFFSET) = type;
-}
-void initialize_leaf_node(void* node) {
-	set_node_type(node, NODE_LEAF);
-	 *get_leaf_node_num_cells(node) = 0; 
-}
+void set_node_type(void* node, NodeType type);
+
+void initialize_leaf_node(void* node);
+
+/*  Set the position of the given key.
+	If the key is not present, set the position
+	where it should be insreted */
+Cursor table_find(Table& table, uint32_t key);
+
+Cursor leaf_node_find(Table& table, uint32_t page_num0, uint32_t key);
+
