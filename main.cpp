@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cstdint>
 #include <cerrno>
+#include <cassert>
 
 #include "input.h"
 
@@ -14,7 +15,6 @@
 #endif
 
 /* Table */
-
 enum {
     COLUMN_USERNAME_SIZE = 32,
     COLUMN_EMAIL_SIZE = 255
@@ -28,7 +28,7 @@ typedef struct {
 
 void print_row(Row& row)
 {
-    printf("(%d, %s, %s)\n", row.id, row.username, row.email);
+    printf("(%u, %s, %s)\n", row.id, row.username, row.email);
 }
 
 #include <cstddef>
@@ -45,20 +45,30 @@ void print_row(Row& row)
 
 #define ROW_SIZE        sizeof(Row)
 
-enum Table_layout {
-    PAGE_SIZE       = 4096, //< Correspond OS page size
-    TABLE_MAX_PAGES = 100,
-    ROWS_PER_PAGE   = PAGE_SIZE / ROW_SIZE,
-    TABLE_MAX_ROW   = ROWS_PER_PAGE * TABLE_MAX_PAGES
-};
+#define PAGE_SIZE       (4096) //< Correspond OS page size
+#define TABLE_MAX_PAGES (100)
+
+/* B-TREE */
+#include "B-tree.h"
+
+
+void serialize_row(void* dest, Row* source)
+{
+    memcpy(dest, source, ROW_SIZE);
+}
+
+void deserialize_row(Row* dest, void* source)
+{
+    memcpy(dest, source, ROW_SIZE);
+}
 
 class Table;
-
 class Pager {
     friend class Table;
 public:
     FILE*       fs;
     uint32_t    file_length;
+    uint32_t    num_pages;
     int8_t*     pages[TABLE_MAX_PAGES];
 private:
     Pager(const char* filename)
@@ -89,72 +99,107 @@ private:
             exit(EXIT_FAILURE);
         }
         file_length = ftell(fs);
+        num_pages = (file_length / PAGE_SIZE);
+
+        if (file_length % PAGE_SIZE != 0) {
+            printf("DB file is not a whole number of pages. Corrupt file.\n");
+            exit(EXIT_FAILURE);
+        }
 
         for (int i = 0; i < TABLE_MAX_PAGES; i++)
             pages[i] = NULL;
     }
     ~Pager()
     {
-        // Table class should be responsible for pages memory free.
+        // Table class should be responsible for memory free of pages
+    }
+
+public:
+    void flush(uint32_t page_num)
+    {
+        if (pages[page_num] == NULL)
+        {
+            printf("Tried to flush null page.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        if (fseek(fs, page_num * PAGE_SIZE, SEEK_SET) == -1)
+        {
+            printf("Error to fseek() : %d\n", errno);
+            exit(EXIT_FAILURE);
+        }
+
+        ssize_t bytes_written = fwrite(pages[page_num], sizeof(int8_t), PAGE_SIZE, fs);
+        if (bytes_written != PAGE_SIZE)
+        {
+            printf("Error to fwrite() : %d\n", errno);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    void* get_page(uint32_t page_num)
+    {
+        if (page_num >= TABLE_MAX_PAGES)
+        {
+            printf("Tried to fetch page number out of bounds. %u > %d\n",
+                page_num, TABLE_MAX_PAGES);
+            exit(EXIT_FAILURE);
+        }
+        
+        if (pages[page_num] == NULL)
+        {
+            // Cache miss. Allocate memory and load from file
+            void* page = new int8_t[PAGE_SIZE];
+            uint32_t num_file_pages = file_length / PAGE_SIZE;
+
+            // We might save a partial page at the end of file
+            if (file_length % PAGE_SIZE != 0)
+                num_file_pages += 1;
+            
+            if (page_num < num_file_pages)
+            {
+                fseek(fs, page_num * PAGE_SIZE, SEEK_SET);
+                ssize_t bytes_read = fread(page, sizeof(int8_t), PAGE_SIZE, fs);
+                if (bytes_read == -1)
+                {
+                    printf("Error reading file: %d\n", errno);
+                    exit(EXIT_FAILURE);
+                }
+            }
+
+            pages[page_num] = (int8_t*)page;
+
+            if (page_num >= num_pages) {
+                num_pages = page_num + 1;
+            }
+        }
+        return pages[page_num];
     }
 };
 
-void pager_flush(Pager& pager, uint32_t page_num, uint32_t bytes)
-{
-    if (pager.pages[page_num] == NULL)
-    {
-        printf("Tried to flush null page.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    if (fseek(pager.fs, page_num * PAGE_SIZE, SEEK_SET) == -1)
-    {
-        printf("Error to fseek() : %d\n", errno);
-        exit(EXIT_FAILURE);
-    }
-
-    ssize_t bytes_written = fwrite(pager.pages[page_num], sizeof(int8_t), bytes, pager.fs);
-    if (bytes_written != bytes)
-    {
-        printf("Error to fwrite() : %d\n", errno);
-        exit(EXIT_FAILURE);
-    }
-}
-
 class Table {
 public:
-    uint32_t    num_rows;
     Pager       pager;
+    uint32_t    root_page_num;
     Table(const char* filename)
         : pager(filename)
+        , root_page_num(0)
     {
-        num_rows = pager.file_length / ROW_SIZE;
+        if (pager.num_pages == 0) {
+            // New database file. Initialize page 0 as leaf node.
+            void* root_node = pager.get_page(0);
+            initialize_leaf_node(root_node);
+        }
     }
     ~Table()
     {
-        const uint32_t num_full_pages = num_rows / ROWS_PER_PAGE;
-
-        for (uint32_t i = 0; i < num_full_pages; i++)
+        for (uint32_t i = 0; i < pager.num_pages; i++)
         {
             if (pager.pages[i] == NULL)
                 continue;
-            pager_flush(pager, i, PAGE_SIZE);
+            pager.flush(i);
             delete pager.pages[i];
             pager.pages[i] = NULL;
-        }
-
-        // There may be a partial page to write to the end of the file
-        // This should not be needed after we switch to a B-tree.
-        uint32_t num_additional_rows = num_rows % ROWS_PER_PAGE;
-        if (num_additional_rows > 0)
-        {
-            uint32_t page_num = num_full_pages;
-            if (pager.pages[page_num] != NULL)
-            {
-                pager_flush(pager, page_num, num_additional_rows * ROW_SIZE);
-                delete pager.pages[page_num];
-                pager.pages[page_num] = NULL;
-            }
         }
 
         int result = fclose(pager.fs);
@@ -174,41 +219,6 @@ public:
     }
 };
 
-void* get_page(Pager& pager, uint32_t page_num)
-{
-    if (page_num >= TABLE_MAX_PAGES)
-    {
-        printf("Tried to fetch page number out of bounds. %d > %d\n"
-            , page_num, TABLE_MAX_PAGES);
-        exit(EXIT_FAILURE);
-    }
-    
-    if (pager.pages[page_num] == NULL)
-    {
-        // Cache miss. Allocate memory and load from file
-        void* page = new int8_t[PAGE_SIZE];
-        uint32_t num_pages = pager.file_length / PAGE_SIZE;
-
-        // We might save a partial page at the end of file
-        if (pager.file_length % PAGE_SIZE != 0)
-            num_pages += 1;
-        
-        if (page_num < num_pages)
-        {
-            fseek(pager.fs, page_num * PAGE_SIZE, SEEK_SET);
-            ssize_t bytes_read = fread(page, sizeof(int8_t), PAGE_SIZE, pager.fs);
-            if (bytes_read == -1)
-            {
-                printf("Error reading file: %d\n", errno);
-                exit(EXIT_FAILURE);
-            }
-        }
-
-        pager.pages[page_num] = (int8_t*)page;
-    }
-    return pager.pages[page_num];
-}
-
 // void* row_slot(Table& table, uint32_t row_num)
 // {
 //     const uint32_t page_num = row_num / ROWS_PER_PAGE;
@@ -225,43 +235,115 @@ class Cursor
 {
 public:
     Table*      table;
-    uint32_t    row_num;
+    uint32_t    page_num;
+    uint32_t    cell_num;
     bool        end_of_table; // Indicates a position one past the last element
 
     Cursor(Table* table0)
         : table(table0)
-        , row_num(0)
-        , end_of_table(table0->num_rows == 0)
+        , page_num(table->root_page_num)
+        , cell_num(0)
     {
+        assert(table0 != NULL);
+        set_table_start();
     }
 
     void set_table_start()
     {
-        if (table == NULL)
-            return;
-        row_num = 0;
-        end_of_table = (table->num_rows == 0);
+        page_num = table->root_page_num;
+        cell_num = 0;
+        void*       root_node = table->pager.get_page(table->root_page_num);
+        uint32_t    num_cells = *get_leaf_node_num_cells(root_node);
+        end_of_table = (num_cells == 0);
     }
-    void set_table_end()
+    /*  Set the position of the given key.
+        If the key is not present, set the position
+        where it should be insreted */
+    void find(uint32_t key)
     {
-        if (table == NULL)
-            return;
-        row_num = table->num_rows;
-        end_of_table = true;
+        uint32_t root_page_num = table->root_page_num;
+        void* root_node = table->pager.get_page(root_page_num);
+
+        if (get_node_type(root_node) == NODE_LEAF) 
+        {
+            return search_leaf_node(root_page_num, key);    
+        }
+        else
+        {
+            printf("Need to implement searching an internal node\n");
+            exit(EXIT_FAILURE);
+        }
     }
+
+    void search_leaf_node(uint32_t page_num0, uint32_t key)
+    {
+        void* node = table->pager.get_page(page_num0);
+        uint32_t num_cells = *get_leaf_node_num_cells(node);
+        page_num = page_num0;
+
+        // Binary search
+        uint32_t min_index = 0;
+        uint32_t one_past_max_index = num_cells;
+        while (min_index != one_past_max_index)
+        {
+            uint32_t index = (min_index + one_past_max_index) / 2;
+            uint32_t key_at_index = *get_leaf_node_key(node, index);
+            if (key == key_at_index)
+            {
+                cell_num = index;
+                return;
+            }
+            if (key < key_at_index)
+                one_past_max_index = index;
+            else
+                min_index = index + 1;
+        }
+
+        cell_num = min_index;
+    }
+
     void* value()
     {
-        const uint32_t page_num = row_num / ROWS_PER_PAGE;
-        void* page = get_page(table->pager, page_num);
-        const uint32_t row_offset = row_num % ROWS_PER_PAGE;
-        const uint32_t byte_offset = row_offset * ROW_SIZE;
-        return (int8_t*)page + byte_offset;
+        void* page = table->pager.get_page(page_num);
+        return (int8_t*)get_leaf_node_value(page, cell_num);
     }
+
     void advance()
     {
-        row_num += 1;
-        if (row_num >= table->num_rows)
+        void* node = table->pager.get_page(page_num);
+
+        cell_num += 1;
+        if (cell_num >= *get_leaf_node_num_cells(node)) {
             end_of_table = true;
+        }
+    }
+    
+    void insert_leaf_node(uint32_t key, Row* value)
+    {
+        void* node = table->pager.get_page(page_num);
+
+        uint32_t num_cells = *get_leaf_node_num_cells(node);
+        if (num_cells >= LEAF_NODE_MAX_CELLS) 
+        {
+            // Node full
+            printf("Need to implement splitting a leaf node.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        if (cell_num < num_cells) 
+        {
+            // Make room for new cell
+            for (uint32_t i = num_cells; i > cell_num; i--)
+            {
+                memcpy(get_leaf_node_cell(node, i)
+                    , get_leaf_node_cell(node, i - 1)
+                    , LEAF_NODE_CELL_SIZE);    
+            }
+        }
+
+        *get_leaf_node_num_cells(node) += 1;
+        *get_leaf_node_key(node, cell_num) = key;
+        serialize_row(get_leaf_node_value(node, cell_num), value);
     }
 };
 
@@ -272,12 +354,42 @@ typedef enum {
     META_COMMAND_UNRECOGNIZED_COMMAND
 } MetaCommandResult;
 
+void print_constants() {
+    printf("ROW_SIZE: %d\n", (int)ROW_SIZE);
+    printf("COMMON_NODE_HEADER_SIZE: %d\n", (int)COMMON_NODE_HEADER_SIZE);
+    printf("LEAF_NODE_HEADER_SIZE: %d\n", LEAF_NODE_HEADER_SIZE);
+    printf("LEAF_NODE_CELL_SIZE: %d\n", LEAF_NODE_CELL_SIZE);
+    printf("LEAF_NODE_SPACE_FOR_CELLS: %d\n", LEAF_NODE_SPACE_FOR_CELLS);
+    printf("LEAF_NODE_MAX_CELLS: %d\n", LEAF_NODE_MAX_CELLS);
+}
+
+void print_leaf_node(void* node) {
+    uint32_t num_cells = *get_leaf_node_num_cells(node);
+    printf("leaf (size %d)\n", num_cells);
+    for (uint32_t i = 0; i < num_cells; i++) {
+        uint32_t key  = *get_leaf_node_key(node, i);
+        printf("  -  %d : %d\n", i, key);
+    }
+}
+
 MetaCommandResult do_meta_command(InputBuffer& input_buffer, Table& table)
 {
     if (strcmp(input_buffer.buffer, ".exit") == 0)
     {
         table.~Table();
         exit(EXIT_SUCCESS);
+    }
+    else if (strcmp(input_buffer.buffer, ".constants") == 0)
+    {
+        printf("Constants:\n");
+        print_constants();
+        return META_COMMAND_SUCCESS;
+    }
+    else if (strcmp(input_buffer.buffer, ".btree") == 0)
+    {
+        printf("Tree:\n");
+        print_leaf_node(table.pager.get_page(0));
+        return META_COMMAND_SUCCESS;
     }
     else
         return META_COMMAND_UNRECOGNIZED_COMMAND;
@@ -343,19 +455,10 @@ PrepareResult prepare_statement(InputBuffer& input_buffer, Statement& statement)
     return PREPARE_UNRECOGNIZED_STATEMENT;
 }
 
-void serialize_row(Row* source, void* dest)
-{
-    memcpy(dest, source, ROW_SIZE);
-}
-
-void deserialize_row(void* source, Row* dest)
-{
-    memcpy(dest, source, ROW_SIZE);
-}
-
 typedef enum {
     EXECUTE_SUCCESS,
-    EXECUTE_TABLE_FULL
+    EXECUTE_TABLE_FULL,
+    EXECUTE_DUPLICATE_KEY
 } ExecuteResult;
 
 ExecuteResult execute_insert(Statement& statement, Table& table);
@@ -374,15 +477,23 @@ ExecuteResult execute_statement(Statement& statement, Table& table)
 
 ExecuteResult execute_insert(Statement& statement, Table& table)
 {
-    if (table.num_rows >= TABLE_MAX_ROW)
+    void* node = table.pager.get_page(table.root_page_num);
+    uint32_t num_cells = *get_leaf_node_num_cells(node);
+    if (num_cells >= LEAF_NODE_MAX_CELLS)
         return EXECUTE_TABLE_FULL;
     
     Row* row_to_insert = &(statement.row_to_insert);
+    uint32_t key_to_insert = row_to_insert->id;
     Cursor cursor(&table);
-    cursor.set_table_end();
+    cursor.find(key_to_insert);
 
-    serialize_row(row_to_insert, cursor.value());
-    table.num_rows += 1;
+    if (cursor.cell_num < num_cells) 
+    {
+        uint32_t key_at_index = *get_leaf_node_key(node, cursor.cell_num);
+        if (key_at_index == key_to_insert)
+            return EXECUTE_DUPLICATE_KEY;
+    }
+    cursor.insert_leaf_node(row_to_insert->id, row_to_insert);
     
     return EXECUTE_SUCCESS;
 }
@@ -393,7 +504,7 @@ ExecuteResult execute_select(Statement& statement, Table& table)
     Row row;
     while (cursor.end_of_table != true)
     {
-        deserialize_row(cursor.value(), &row);
+        deserialize_row(&row, cursor.value());
         print_row(row);
         cursor.advance();
     }
@@ -456,6 +567,9 @@ int main(int argc, char* argv[])
                 break;
             case EXECUTE_TABLE_FULL:
                 printf("Error: Table full.\n");
+                break;
+            case EXECUTE_DUPLICATE_KEY:
+                printf("Error: Duplicate key.\n");
                 break;
         }
     }
